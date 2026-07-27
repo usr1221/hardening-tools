@@ -13,3 +13,27 @@ Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow | ForEach-Obj
         Program  = $ap.Program
     }
 } | Where-Object { $_.Remote -eq 'Any' } | Sort-Object Nazwa | Format-Table -AutoSize
+
+Get-CimInstance Win32_Service | ForEach-Object {
+    $p = ($_.PathName -replace '^"([^"]+)".*','$1' -replace '^([^ ]+\.exe).*','$1')
+    if (Test-Path $p -EA SilentlyContinue) {
+        $acl = Get-Acl (Split-Path $p) -EA SilentlyContinue
+        $bad = $acl.Access | Where-Object {
+            $_.IdentityReference -match 'Users|Everyone|Authenticated Users|INTERACTIVE' -and
+            $_.FileSystemRights -match 'Write|Modify|FullControl' }
+        if ($bad) { [PSCustomObject]@{ Usluga=$_.Name; Sciezka=$p; Konto=($bad.IdentityReference -join ',') } }
+    }
+} | Format-Table -AutoSize
+
+# PATH zapisywalny przez uzytkownika
+$env:PATH -split ';' | Where-Object { $_ } | ForEach-Object {
+    if (Test-Path $_) {
+        $acl = Get-Acl $_ -EA SilentlyContinue
+        if ($acl.Access | Where-Object { $_.IdentityReference -match 'Users|Everyone' -and $_.FileSystemRights -match 'Write|Modify|FullControl' }) { $_ }
+    }
+}
+
+# AlwaysInstallElevated
+'HKLM','HKCU' | ForEach-Object {
+    Get-ItemProperty "${_}:\SOFTWARE\Policies\Microsoft\Windows\Installer" -EA SilentlyContinue |
+        Select-Object @{n='Hive';e={$_}}, AlwaysInstallElevated }
