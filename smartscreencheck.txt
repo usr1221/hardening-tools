@@ -1,0 +1,32 @@
+$out = [ordered]@{}
+
+# --- Shell (GPO) ---
+$out.Shell = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -EA SilentlyContinue |
+    Select-Object EnableSmartScreen, ShellSmartScreenLevel
+
+# --- Shell (stan lokalny / legacy) ---
+$out.ShellLocal = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -EA SilentlyContinue |
+    Select-Object SmartScreenEnabled
+
+# --- Edge ---
+$out.Edge = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -EA SilentlyContinue |
+    Select-Object SmartScreenEnabled, SmartScreenPuaEnabled,
+                  PreventSmartScreenPromptOverride, PreventSmartScreenPromptOverrideForFiles,
+                  SmartScreenForTrustedDownloadsEnabled, SmartScreenDnsRequestsEnabled
+$out.EdgeAllowList = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\SmartScreenAllowListDomains' -EA SilentlyContinue
+
+# --- App Install Control ---
+$out.AppInstall = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen' -EA SilentlyContinue |
+    Select-Object ConfigureAppInstallControlEnabled, ConfigureAppInstallControl, EnableSmartScreen
+
+# --- Enhanced Phishing Protection ---
+$out.WTDS = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WTDS\Components' -EA SilentlyContinue |
+    Select-Object ServiceEnabled, NotifyMalicious, NotifyPasswordReuse, NotifyUnsafeApp, CaptureThreatWindow, AutomaticDataCollection
+
+# --- kanal MDM/CSP ---
+$out.CspSmartScreen = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\SmartScreen' -EA SilentlyContinue
+$out.CspBrowser     = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Browser' -EA SilentlyContinue |
+    Select-Object AllowSmartScreen, PreventSmartScreenPromptOverride, PreventSmartScreenPromptOverrideForFiles
+$out.CspWTD = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\WebThreatDefense' -EA SilentlyContinue
+
+$out.GetEnumerator() | ForEach-Object { "`n=== $($_.Key) ==="; $_.Value | Format-List }
