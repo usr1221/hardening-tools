@@ -1,0 +1,15 @@
+# reguly wpuszczajace z dowolnego adresu
+Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow | ForEach-Object {
+    $af = $_ | Get-NetFirewallAddressFilter
+    $pf = $_ | Get-NetFirewallPortFilter
+    $ap = $_ | Get-NetFirewallApplicationFilter
+    [PSCustomObject]@{
+        Nazwa    = $_.DisplayName
+        Profil   = $_.Profile
+        Zrodlo   = $_.PolicyStoreSource
+        Remote   = $af.RemoteAddress -join ','
+        Port     = $pf.LocalPort -join ','
+        Protokol = $pf.Protocol
+        Program  = $ap.Program
+    }
+} | Where-Object { $_.Remote -eq 'Any' } | Sort-Object Nazwa | Format-Table -AutoSize
