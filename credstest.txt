@@ -1,0 +1,21 @@
+$sig = @'
+using System;
+using System.Runtime.InteropServices;
+public class H {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+}
+'@
+Add-Type -TypeDefinition $sig
+
+$pid_lsass = (Get-Process lsass).Id
+# PROCESS_QUERY_INFORMATION (0x0400) | PROCESS_VM_READ (0x0010)
+$h = [H]::OpenProcess(0x0410, $false, $pid_lsass)
+if ($h -eq [IntPtr]::Zero) {
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    "BLOKADA - OpenProcess nieudany, Win32Error=$err ($(([System.ComponentModel.Win32Exception]$err).Message))"
+} else {
+    "UCHWYT UZYSKANY - brak ochrony na tej granicy"
+    [H]::CloseHandle($h) | Out-Null
+}
