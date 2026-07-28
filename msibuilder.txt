@@ -1,0 +1,100 @@
+# Buduje CalcRunner.msi bez WiX Toolset, przez COM WindowsInstaller.Installer.
+# Po instalacji MSI uruchamia calc.exe (custom action typu EXE).
+
+$msiPath = Join-Path $PWD 'CalcRunner.msi'
+if (Test-Path $msiPath) { Remove-Item $msiPath -Force }
+
+# --- Helpery do wywolan COM przez refleksje ---
+function Invoke-Method($obj, $name, [object[]]$params) {
+    $obj.GetType().InvokeMember($name, [Reflection.BindingFlags]::InvokeMethod, $null, $obj, $params)
+}
+function Set-Prop($obj, $name, [object[]]$params) {
+    $obj.GetType().InvokeMember($name, [Reflection.BindingFlags]::SetProperty, $null, $obj, $params)
+}
+
+$installer = New-Object -ComObject WindowsInstaller.Installer
+# 3 = msiOpenDatabaseModeCreate (nowa baza MSI)
+$db = Invoke-Method $installer 'OpenDatabase' @($msiPath, 3)
+
+function Exec($sql) {
+    $view = Invoke-Method $db 'OpenView' @($sql)
+    Invoke-Method $view 'Execute' @($null)
+    Invoke-Method $view 'Close' @()
+}
+
+function Insert([string]$table, [string[]]$columns, [object[]]$values) {
+    $cols = ($columns | ForEach-Object { "``$_``" }) -join ','
+    $qs   = ($values  | ForEach-Object { '?' }) -join ','
+    $view = Invoke-Method $db 'OpenView' @("INSERT INTO ``$table`` ($cols) VALUES ($qs)")
+    $rec  = Invoke-Method $installer 'CreateRecord' @($values.Count)
+    for ($i = 0; $i -lt $values.Count; $i++) {
+        if ($values[$i] -is [int]) { Set-Prop $rec 'IntegerData' @(($i+1), $values[$i]) }
+        else                       { Set-Prop $rec 'StringData'  @(($i+1), [string]$values[$i]) }
+    }
+    Invoke-Method $view 'Execute' @($rec)
+    Invoke-Method $view 'Close' @()
+}
+
+# --- Schemat tabel (backtick = identyfikatory MSI SQL) ---
+Exec 'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL PRIMARY KEY `Property`)'
+Exec 'CREATE TABLE `Directory` (`Directory` CHAR(72) NOT NULL, `Directory_Parent` CHAR(72), `DefaultDir` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Directory`)'
+Exec 'CREATE TABLE `Component` (`Component` CHAR(72) NOT NULL, `ComponentId` CHAR(38), `Directory_` CHAR(72) NOT NULL, `Attributes` INT NOT NULL, `Condition` CHAR(255), `KeyPath` CHAR(72) PRIMARY KEY `Component`)'
+Exec 'CREATE TABLE `Feature` (`Feature` CHAR(38) NOT NULL, `Feature_Parent` CHAR(38), `Title` CHAR(64) LOCALIZABLE, `Description` CHAR(255) LOCALIZABLE, `Display` INT, `Level` INT NOT NULL, `Directory_` CHAR(72), `Attributes` INT NOT NULL PRIMARY KEY `Feature`)'
+Exec 'CREATE TABLE `FeatureComponents` (`Feature_` CHAR(38) NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Feature_`, `Component_`)'
+Exec 'CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` INT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)'
+Exec 'CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` INT PRIMARY KEY `Action`)'
+
+# --- GUID-y ---
+$productCode = [guid]::NewGuid().ToString('B').ToUpper()
+$upgradeCode = [guid]::NewGuid().ToString('B').ToUpper()
+$compId      = [guid]::NewGuid().ToString('B').ToUpper()
+$packageCode = [guid]::NewGuid().ToString('B').ToUpper()
+
+# --- Property ---
+Insert 'Property' @('Property','Value') @('ProductCode',     $productCode)
+Insert 'Property' @('Property','Value') @('ProductName',      'CalcRunner')
+Insert 'Property' @('Property','Value') @('ProductVersion',   '1.0.0')
+Insert 'Property' @('Property','Value') @('ProductLanguage',  '1033')
+Insert 'Property' @('Property','Value') @('Manufacturer',     'Test')
+Insert 'Property' @('Property','Value') @('UpgradeCode',      $upgradeCode)
+
+# --- Directory / Component / Feature ---
+Insert 'Directory' @('Directory','DefaultDir')                    @('TARGETDIR','SourceDir')
+Insert 'Directory' @('Directory','Directory_Parent','DefaultDir') @('SystemFolder','TARGETDIR','.')
+Insert 'Component' @('Component','ComponentId','Directory_','Attributes') @('CalcComp',$compId,'TARGETDIR',0)
+Insert 'Feature'   @('Feature','Title','Display','Level','Directory_','Attributes') @('MainFeature','Main',1,1,'TARGETDIR',0)
+Insert 'FeatureComponents' @('Feature_','Component_') @('MainFeature','CalcComp')
+
+# --- Custom action: typ 226 = EXE(2)+Directory(32)+Continue(64)+Async(128) ---
+# Uruchamia calc.exe, nie czeka na zamkniecie i ignoruje kod wyjscia.
+Insert 'CustomAction' @('Action','Type','Source','Target') @('RunCalc',226,'SystemFolder','[SystemFolder]calc.exe')
+
+# --- Sekwencja instalacji ---
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('CostInitialize',800)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('FileCost',900)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('CostFinalize',1000)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('InstallValidate',1400)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('InstallInitialize',1500)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('ProcessComponents',1600)
+Insert 'InstallExecuteSequence' @('Action','Condition','Sequence') @('RunCalc','NOT Installed',1700)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('RegisterProduct',5100)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('PublishFeatures',5200)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('PublishProduct',5300)
+Insert 'InstallExecuteSequence' @('Action','Sequence') @('InstallFinalize',6600)
+
+# --- Summary Information Stream (bez tego MSI sie nie otworzy) ---
+$si = Invoke-Method $db 'SummaryInformation' @(20)
+Set-Prop $si 'Property' @(2,  'CalcRunner')   # Title
+Set-Prop $si 'Property' @(3,  'CalcRunner')   # Subject
+Set-Prop $si 'Property' @(4,  'Test')         # Author
+Set-Prop $si 'Property' @(7,  'Intel;1033')   # Template: platforma;jezyk
+Set-Prop $si 'Property' @(9,  $packageCode)   # Package code (REVNUMBER)
+Set-Prop $si 'Property' @(14, 200)            # Min. wersja instalatora
+Set-Prop $si 'Property' @(15, 2)              # Word count (flagi zrodla)
+Invoke-Method $si 'Persist' @()
+
+Invoke-Method $db 'Commit' @()
+[Runtime.InteropServices.Marshal]::ReleaseComObject($db)        | Out-Null
+[Runtime.InteropServices.Marshal]::ReleaseComObject($installer) | Out-Null
+
+Write-Host "Utworzono: $msiPath"
