@@ -1,0 +1,17 @@
+$s = [adsisearcher]"(&(objectClass=computer)(sAMAccountName=$env:COMPUTERNAME`$))"
+$s.PropertiesToLoad.AddRange(@(
+    'name','distinguishedname','ms-mcs-admpwd','ms-mcs-admpwdexpirationtime'))
+$r = $s.FindOne()
+
+if (-not $r) { Write-Warning 'Nie znaleziono obiektu komputera'; return }
+$p = $r.Properties
+
+[pscustomobject]@{
+    Name    = $p['name'][0]
+    DN      = $p['distinguishedname'][0]
+    AdmPwd  = if ($p.Contains('ms-mcs-admpwd')) { $p['ms-mcs-admpwd'][0] }
+              else { '<niedostępny>' }
+    Expires = if ($p.Contains('ms-mcs-admpwdexpirationtime')) {
+                  [datetime]::FromFileTime([int64]$p['ms-mcs-admpwdexpirationtime'][0])
+              } else { $null }
+}
