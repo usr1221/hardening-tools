@@ -1,0 +1,659 @@
+# .SYNOPSIS
+#     SCE Check for User Registry settings
+# .DESCRIPTION
+#     Takes a string from a WorkBench environment variable, splits it and uses it in
+#     an assessment. Will check each logged in user's hive against the reference ValueName/Value
+# .NOTES
+#     Format WB artifact string using below syntax
+#     <Key>::<ValueName>::<ValueType>::<Operator>::<Value>::ARGS=<Switches>
+# .EXAMPLE
+#     Delimited string examples:
+#
+#     To test only Active Directory accounts
+#     \Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications::NoToastApplicationNotificationOnLockScreen::REG_DWORD::EQ::1
+#
+#     To include testing of Entra ID accounts (Intune, Entra joined)
+#     \Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications::NoToastApplicationNotificationOnLockScreen::REG_DWORD::EQ::1::ARGS=IncludeEntraIdAccounts
+#
+#     To include testing of Local User accounts
+#     \Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications::NoToastApplicationNotificationOnLockScreen::REG_DWORD::EQ::1::ARGS=IncludeLocalAccounts
+#
+#     To include both Entra ID and Local User accounts
+#     \Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications::NoToastApplicationNotificationOnLockScreen::REG_DWORD::EQ::1::ARGS=IncludeEntraIdAccounts,IncludeLocalAccounts
+
+$RegistryString = $env:XCCDF_VALUE_REGEX
+
+if ([string]::IsNullOrWhiteSpace($RegistryString)) {
+    Write-Error "Registry variable is not set or empty"
+    exit $env:XCCDF_RESULT_ERROR
+}
+
+function Get-HivesToInspect {
+    # .SYNOPSIS
+    # Retrieves the SIDs of logged-on user accounts based on the specified filters.
+    #
+    # .DESCRIPTION
+    # This function retrieves the SIDs of logged-on user accounts, filtering out service logons
+    # and optionally filtering out local accounts and Entra ID accounts based on the provided parameters.
+    # The function uses the LSA (Local Security Authority) APIs to enumerate logon sessions and extract relevant information.
+    #
+    # .NOTES
+    # Author: Aaron Margosis (Tanium)
+    #
+    # .PARAMETER IncludeLocalAccounts
+    # Do not filter out local accounts.
+    # (The SIDs of local accounts start with the machine's SID.)
+    #
+    # .PARAMETER IncludeEntraIdAccounts
+    # Do not filter out Entra ID accounts.
+    # (The SIDs of Entra ID accounts begin with "S-1-12-1-".)
+    #
+    # .EXAMPLE
+    # Get-HivesToInspect -IncludeLocalAccounts -IncludeEntraIdAccounts
+    # Retrieves all SIDs, including local accounts and Entra ID accounts.
+    #
+    # .EXAMPLE
+    # Get-HivesToInspect
+    # Retrieves only SIDs for AD accounts, excluding local and Entra ID accounts.
+    param(
+        [switch] $IncludeLocalAccounts,
+        [switch] $IncludeEntraIdAccounts
+    )
+
+    # ----------------------------------------------------------------------------------------------------
+    # The SIDs of local accounts begin with the machine SID. Identify the machine SID to perform those tests.
+    # ----------------------------------------------------------------------------------------------------
+    # Machine SID: get the base SID of a local user account.
+    # (All local accounts' SIDs have a RID appended to that machine SID.
+    # The machine account is the authority within which these accounts are defined.)
+    $machineSid = (Get-LocalUser)[0].SID.AccountDomainSid.Value
+    # For matching, also incorporate the last hyphen
+    $machineSid_ = $machineSid + "-"
+
+    function IsLocalUserAccount([string] $userSid) {
+        return ($machineSid_ -eq $userSid.Substring(0, $machineSid_.Length))
+    }
+
+    # ----------------------------------------------------------------------------------------------------
+# Define the interop for the LSA logon session APIs
+# ----------------------------------------------------------------------------------------------------
+
+Add-Type -TypeDefinition @'
+
+public enum SECURITY_LOGON_TYPE {
+    UndefinedLogonType = 0,
+    Interactive = 2,
+    Network,
+    Batch,
+    Service,
+    Proxy,
+    Unlock,
+    NetworkCleartext,
+    NewCredentials,
+    RemoteInteractive,
+    CachedInteractive,
+    CachedRemoteInteractive,
+    CachedUnlock,
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct LUID {
+    public int LowPart; // DWORD
+    public int HighPart; // LONG
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct Anonymous_b4d9893f_84b2_4c09_b43e_a6bcbb785d60 {
+    public int LowPart; // DWORD
+    public int HighPart; // LONG
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct Anonymous_91b81ffc_5d42_450d_a9f8_fdb76b505fb9 {
+    public int LowPart; // DWORD
+    public int HighPart; // LONG
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Explicit)]
+public struct LARGE_INTEGER {
+    // Union
+    [System.Runtime.InteropServices.FieldOffsetAttribute(0)]
+    public Anonymous_b4d9893f_84b2_4c09_b43e_a6bcbb785d60 DUMMYSTRUCTNAME;
+    [System.Runtime.InteropServices.FieldOffsetAttribute(0)]
+    public Anonymous_91b81ffc_5d42_450d_a9f8_fdb76b505fb9 u;
+    [System.Runtime.InteropServices.FieldOffsetAttribute(0)]
+    public long QuadPart;
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct LSA_UNICODE_STRING {
+    public short Length; // USHORT
+    public short MaximumLength; // USHORT
+    [System.Runtime.InteropServices.MarshalAsAttribute(System.Runtime.InteropServices.UnmanagedType.LPWStr)]
+    public string Buffer;
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct LSA_LAST_INTER_LOGON_INFO {
+    public LARGE_INTEGER LastSuccessfulLogon;
+    public LARGE_INTEGER LastFailedLogon;
+    public int FailedAttemptCountSinceLastSuccessfulLogon; // ULONG
+}
+
+[System.Runtime.InteropServices.StructLayoutAttribute(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct SECURITY_LOGON_SESSION_DATA {
+    public int Size; // ULONG
+    public LUID LogonId;
+    public LSA_UNICODE_STRING UserName;
+    public LSA_UNICODE_STRING LogonDomain;
+    public LSA_UNICODE_STRING AuthenticationPackage;
+    public int LogonType; // ULONG
+    public int Session; // ULONG
+    public System.IntPtr Sid;
+    public LARGE_INTEGER LogonTime;
+    public LSA_UNICODE_STRING LogonServer;
+    public LSA_UNICODE_STRING DnsDomainName;
+    public LSA_UNICODE_STRING Upn;
+    public int UserFlags; // ULONG
+    public LSA_LAST_INTER_LOGON_INFO LastLogonInfo;
+    public LSA_UNICODE_STRING LogonScript;
+    public LSA_UNICODE_STRING ProfilePath;
+    public LSA_UNICODE_STRING HomeDirectory;
+    public LSA_UNICODE_STRING HomeDirectoryDrive;
+    public LARGE_INTEGER LogoffTime;
+    public LARGE_INTEGER KickOffTime;
+    public LARGE_INTEGER PasswordLastSet;
+    public LARGE_INTEGER PasswordCanChange;
+    public LARGE_INTEGER PasswordMustChange;
+}
+
+public partial class NativeMethods {
+    
+    /// Return Type: LONG->int
+    ///LogonSessionCount: PULONG->ULONG*
+    ///LogonSessionList: PLUID*
+    [System.Runtime.InteropServices.DllImportAttribute(
+        "Secur32.dll", 
+        EntryPoint="LsaEnumerateLogonSessions", 
+        CallingConvention=System.Runtime.InteropServices.CallingConvention.StdCall)]
+    public static extern  int LsaEnumerateLogonSessions(
+        ref int LogonSessionCount, 
+        ref System.IntPtr LogonSessionList) ;
+
+    /// Return Type: LONG->int
+    ///LogonId: PLUID->_LUID*
+    ///ppLogonSessionData: PSECURITY_LOGON_SESSION_DATA*
+    [System.Runtime.InteropServices.DllImportAttribute(
+        "Secur32.dll", 
+        EntryPoint="LsaGetLogonSessionData", 
+        CallingConvention=System.Runtime.InteropServices.CallingConvention.StdCall)]
+    public static extern  int LsaGetLogonSessionData(
+        ref LUID LogonId, 
+        ref System.IntPtr ppLogonSessionData) ;
+
+    /// Return Type: LONG->int
+    ///Buffer: PVOID->void*
+    [System.Runtime.InteropServices.DllImportAttribute(
+        "Secur32.dll", 
+        EntryPoint="LsaFreeReturnBuffer", 
+        CallingConvention=System.Runtime.InteropServices.CallingConvention.StdCall)]
+    public static extern  int LsaFreeReturnBuffer(System.IntPtr Buffer) ;
+}
+'@
+
+    # Compatible replacement for [IntPtr]::Add static method, for older PowerShell versions where it's not defined
+    function IntPtrAdd([System.IntPtr] $pointer, [int] $offset)
+    {
+        return [System.IntPtr]($pointer.ToInt64() + $offset)
+    }
+
+    # Return a PSCustomObject including the SID, user name, and logon type for each LSA logon session.
+    function GetSelectedLogonSessionData()
+    {
+        [uint32] $sessionCount = 0
+        [IntPtr] $ppLuids = [IntPtr]::Zero
+        $LuidDataSize = [System.Runtime.InteropServices.Marshal]::SizeOf([System.Type][LUID])
+
+        $ret = [NativeMethods]::LsaEnumerateLogonSessions([ref] $sessionCount, [ref] $ppLuids)
+        if (0 -ne $ret)
+        {
+            Write-Error ("LsaEnumerateLogonSessions failed with NTSTATUS 0x" + $ret.ToString("X8"))
+        }
+        else
+        {
+            Write-Verbose ("LsaEnumerateLogonSessions returned " + $sessionCount + " sessions")
+
+            for ($ixSession = 0; $ixSession -lt $sessionCount; $ixSession++)
+            {
+                $luidOffset = $LuidDataSize * $ixSession
+                $luid = [System.Runtime.InteropServices.Marshal]::PtrToStructure((IntPtrAdd -pointer $ppLuids -offset $luidOffset), [type][LUID])
+                Write-Verbose ("LUID " + $luid.HighPart.ToString() + ":" + $luid.LowPart.ToString())
+
+                [IntPtr]$ppLogonSessionData = [IntPtr]::Zero
+
+                $ret = [NativeMethods]::LsaGetLogonSessionData([ref]$luid, [ref]$ppLogonSessionData)
+                if (0 -ne $ret)
+                {
+                    Write-Error ("LsaGetLogonSessionData failed with NTSTATUS 0x" + $ret.ToString("X8"))
+                }
+                else
+                {
+                    $logonSessionData = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ppLogonSessionData, [type][SECURITY_LOGON_SESSION_DATA])
+                    if ($logonSessionData.LogonDomain.Buffer.Length -gt 0 -or $logonSessionData.UserName.Buffer.Length -gt 0)
+                    {
+                        $UserName = $logonSessionData.LogonDomain.Buffer + "\" + $logonSessionData.UserName.Buffer
+                    }
+                    else
+                    {
+                        $UserName = [String]::Empty
+                    }
+                    $LogonType = [SECURITY_LOGON_TYPE] ($logonSessionData.LogonType)
+                    if ([IntPtr]::Zero -ne $logonSessionData.Sid)
+                    {
+                        $SID = ([System.Security.Principal.SecurityIdentifier]::new($logonSessionData.Sid)).ToString()
+                    }
+                    else
+                    {
+                        $SID = [string]::Empty
+                    }
+
+                    [PSCustomObject] @{
+                        UserName = $UserName;
+                        LogonType = $LogonType;
+                        SID = $SID
+                    }
+
+                    Write-Verbose ("Session " + $logonSessionData.Session.ToString() + ": $LogonType $UserName $SID" )
+
+                    [void] [NativeMethods]::LsaFreeReturnBuffer($ppLogonSessionData)
+                }
+
+            }
+
+            [void] [NativeMethods]::LsaFreeReturnBuffer($ppLuids)
+        }
+    }
+
+    # ----------------------------------------------------------------------------------------------------
+    # Get selected information about all the sessions, filtering out those with non-applicable logon types
+    # ----------------------------------------------------------------------------------------------------
+    $sessions = GetSelectedLogonSessionData | Where-Object { $_.LogonType -notin @(
+            [SECURITY_LOGON_TYPE]::UndefinedLogonType, 
+            [SECURITY_LOGON_TYPE]::Network,
+            [SECURITY_LOGON_TYPE]::Batch,
+            [SECURITY_LOGON_TYPE]::Service,
+            [SECURITY_LOGON_TYPE]::Proxy
+        ) }
+
+    # Initial filtering of sessions based on user account SIDs
+    if ($IncludeEntraIdAccounts) {
+        $sessions = $sessions | Where-Object {
+            $_.SID.StartsWith("S-1-5-21-") -or # AD + local accounts 
+            $_.SID.StartsWith("S-1-12-1-")    # Entra ID accounts
+        }
+    }
+    else {
+        $sessions = $sessions | Where-Object { 
+            $_.SID.StartsWith("S-1-5-21-")    # AD + local accounts
+        }
+    }
+
+    if (-not $IncludeLocalAccounts) {
+        # Filter out local user accounts
+        $sessions = $sessions | Where-Object { -not (IsLocalUserAccount -userSid $_.SID) }
+    }
+
+    # Verify that the SID subkeys are present
+    [void] (New-PSDrive -PSProvider Registry -Name HKU_Script -Root HKEY_USERS -Scope Script)
+
+    # Output SIDs, removing duplicates and ensuring that the HKEY_USERS subkey is present
+    $result = $sessions.SID | Sort-Object -Unique | Where-Object { Test-Path -Path "HKU_Script:\$_" }
+
+    Remove-PSDrive HKU_Script
+
+    return $result
+}
+
+function Get-CachedHivesToInspect {
+    # .SYNOPSIS
+    # Get cached list of hives to inspect, unless the cache is more than 3 minutes old, in which case refresh that cache.
+    #
+    # .NOTES
+    # Author: Aaron Margosis (Tanium)
+    #
+    # .PARAMETER IncludeLocalAccounts
+    # Do not filter out local accounts.
+    # (The SIDs of local accounts start with the machine's SID.)
+    #
+    # .PARAMETER IncludeEntraIdAccounts
+    # Do not filter out Entra ID accounts.
+    # (The SIDs of Entra ID accounts begin with "S-1-12-1-".)
+    #
+    # .PARAMETER ForceRefresh
+    # Force a refresh of the cache regardless of age.
+    #
+    # .PARAMETER CacheExpiryMinutes
+    # Number of minutes before the cache expires. Default is 3 minutes.
+    #
+    # .EXAMPLE
+    # Get-CachedHivesToInspect -IncludeLocalAccounts -IncludeEntraIdAccounts
+    #
+    # .EXAMPLE
+    # Get-CachedHivesToInspect -ForceRefresh
+
+    [CmdletBinding()]
+    param(
+        [switch] $IncludeLocalAccounts,
+        [switch] $IncludeEntraIdAccounts,
+        [switch] $ForceRefresh,
+
+        [int]
+        [Parameter(Mandatory=$false)]
+        $CacheExpiryMinutes = 3
+    )
+
+    # assume the cache needs refreshing
+    $bRefreshCache = $true
+    $cachefilecontent = $null
+    $cachefilepath = $env:TEMP + "\" + "CIS_Assessor_UserHiveList.txt"
+    Write-Verbose ("Cache file location: $cachefilepath")
+    
+    if (-not $ForceRefresh)
+    {
+        $cachefile = Get-Item $cachefilepath -ErrorAction SilentlyContinue
+
+        # is the cache file there?
+        if ($null -ne $cachefile)
+        {
+            # is the cache file less than $CacheExpiryMinutes old?
+            if ($cachefile.LastWriteTime.AddMinutes($CacheExpiryMinutes) -ge [DateTime]::Now)
+            {
+                # Looks like the cache is still valid, no need to refresh
+                $bRefreshCache = $false
+                $cachefilecontent = @(Get-Content $cachefilepath -ErrorVariable readerror)
+                if ($readerror.Count -gt 0)
+                {
+                    Write-Verbose ("Error reading cache file")
+                    $bRefreshCache = $true
+                }
+                else
+                {
+                    Write-Verbose ("Cache file has " + $cachefilecontent.Count + " lines")
+
+                    # validate content
+                    foreach ( $sid in $cachefilecontent )
+                    {
+                        if (-not $sid.StartsWith("S-1-"))
+                        {
+                            Write-Verbose ("Invalid entry: $sid")
+                            $bRefreshCache = $true
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Write-Verbose "Cache file too old, needs refresh"
+            }
+        }
+        else
+        {
+            Write-Verbose "Cache file not present"
+        }
+    }
+
+    if ($bRefreshCache)
+    {
+        $cachefilecontent = @( Get-HivesToInspect -IncludeLocalAccounts:$IncludeLocalAccounts -IncludeEntraIdAccounts:$IncludeEntraIdAccounts )
+        # Not a fatal error if writing to the cache file fails: it will simply remain invalid. Still returning the correct data, just not caching it.
+        try {
+            $cachefilecontent | Out-File -Encoding ascii -LiteralPath $cachefilepath -Force -ErrorAction SilentlyContinue
+            Write-Verbose ("Wrote updated cache file with " + $cachefilecontent.Count + " lines")
+        }
+        catch { 
+            Write-Verbose ("Error writing to cache file.") 
+        }
+    }
+    
+    return $cachefilecontent
+}
+
+function Invoke-UserRegistryAudit {
+    # .SYNOPSIS
+    # Helper function to audit user registry settings for CIS Benchmarks
+    # .DESCRIPTION
+    # Takes a string from a WorkBench environment variable, splits it and uses it in
+    # an assessment. Also accepts switches for Active Directory, Entra and Local User based SIDs.
+    # Returns a PSCustomObject with the results of the assessment, including evidence and PASS/FAIL state.
+
+    param (
+        [CmdletBinding()]
+        [Parameter(Mandatory = $true)]
+        [string]$RegistryString,
+        [switch]$IncludeLocalAccounts,
+        [switch]$IncludeEntraIdAccounts,
+        [switch]$ForceRefresh
+    )
+
+    $RegSplit = ($RegistryString).Trim() -split '::'
+    if ($RegSplit.Count -ne 5) {
+        Write-Error "Invalid WorkBench string format. Expected 5 parts separated by '::', got $($RegSplit.Count)" -ErrorAction Stop
+    }
+
+    Write-Verbose "Processing registry string pieces: $(($RegSplit) | ForEach-Object { "`n- $_" })"
+    # Split WorkBench string and construct variables
+    $RefKey = $RegSplit[0]
+    $RefValueName = $RegSplit[1]
+    $RefValueType = $RegSplit[2]
+    $RefOperator = $RegSplit[3]
+    # Cast the value as a string or integer depending on the ValueType
+    try {
+        $RefValue = switch ($RefValueType) {
+            'REG_DWORD' { [int]$RegSplit[4] }
+            'DWORD' { [int]$RegSplit[4] }
+            'REG_SZ' { [string]$RegSplit[4] }
+            'STRING' { [string]$RegSplit[4] }
+            'REG_EXPAND_SZ' { [string]$RegSplit[4] }
+            'REG_MULTI_SZ' { [string[]]($RegSplit[4] -split ';') }
+            Default { 
+                Write-Warning "Unknown value type '$RefValueType', treating as string"
+                [string]$RegSplit[4] 
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Error casting value '$($RegSplit[4])' to type '$RefValueType': $($_.Exception.Message)"
+        Write-Error "Failed to cast value '$($RegSplit[4])' to type '$RefValueType': $($_.Exception.Message)" -ErrorAction Stop
+    }
+
+    if (-not $RefKey.StartsWith("\")) {
+        $RefKey = "\" + $RefKey
+    }
+
+    # Map PowerShell registry drive
+    if (-not (Test-Path -Path 'HKU_CISAUDIT:')) {
+        Write-Verbose "Mapping HKU_CISAUDIT PSDrive to HKEY_USERS"
+        New-PSDrive -PSProvider Registry -Name HKU_CISAUDIT -Scope Script -Root HKEY_USERS | Out-Null
+    }
+    # Get the list of active user SIDs to audit
+    $ActiveUserSids = @( Get-CachedHivesToInspect -IncludeLocalAccounts:$IncludeLocalAccounts -IncludeEntraIdAccounts:$IncludeEntraIdAccounts -ForceRefresh:$ForceRefresh )
+
+    # If no active user SIDs found then the recommendation is considered compliant.
+    if ($ActiveUserSids.Count -eq 0) {
+        Write-Verbose "No applicable user SIDs found to audit. Recommendation is compliant."
+        return @{
+            AuditDetails     = @()
+            AuditState       = 'PASS'
+            ExceptionMessage = "Compliant due to no actively logged-on users to audit."
+        }
+    }
+    
+    # Iterate through each SID and perform the audit
+    $AuditDetails = foreach ($Sid in $ActiveUserSids) {
+        Write-Verbose "Auditing SID: $Sid"
+        $RegPath = "HKU_CISAUDIT:\{0}{1}" -f $Sid, $RefKey
+
+        if (Test-Path -Path $RegPath) {
+            $RegItem = Get-Item -Path $RegPath
+            $RegKeyExists = $true
+            $RegValue = $RegItem.GetValue($RefValueName)
+
+            
+            if ($RegItem.Property -contains $RefValueName) {
+                # Construct evidence variables when value name exists
+                $RegValueType = $RegItem.GetValueKind($RefValueName)
+                $RegValueTypeExistence = "[Exists]"
+                $RegValueName = $RefValueName
+                $RegValueNameExistence = "[Exists]"
+            }
+            else {
+                # Value name doesn't exist - set up evidence for non-existent value name
+                $RegValueType = $RefValueType
+                $RegValueName = $RefValueName
+                $RegValueTypeExistence = "[Does not exist]"
+                $RegValueNameExistence = "[Does not exist]"
+            }
+
+            $RegValueType = switch ($RegValueType) {
+                'Dword' { 'REG_DWORD' }
+                'String' { 'REG_SZ' }
+                Default { $RegValueType }
+            }
+
+            if ($RegValueNameExistence -eq '[Exists]') {
+                Write-Verbose "Comparing registry value '$RegValue' with reference value '$RefValue' using operator '$RefOperator'"
+                $SidCompliant = switch ($RefOperator) {
+                    'EQ' { $RegValue -eq $RefValue }
+                    'NE' { $RegValue -ne $RefValue }
+                    'LT' { $RegValue -lt $RefValue }
+                    'GT' { $RegValue -gt $RefValue }
+                    'LE' { $RegValue -le $RefValue }
+                    'GE' { $RegValue -ge $RefValue }
+                    default { $false }
+                }
+                # Check that the registry value type matches the reference type
+                if ($RegValueType -ne $RefValueType) {
+                    Write-Verbose "Registry value type '$RegValueType' does not match reference type '$RefValueType'. Marking as non-compliant."
+                    $SidCompliant = $false
+                }
+            }
+            else {
+                # Compliance fails on non-existence of ValueName
+                $SidCompliant = $false
+            }
+        
+            $Hive = $RegItem.PSDrive.Root
+        }
+        else {
+            # Underlying registry key does not exist - set up evidence for non-existent key
+            # Currently this will be out of compliance, but can be modified if needed
+            Write-Verbose "The key $($RegPath) does not exist."
+            $RegKeyExists = $false
+            $RegItem = $null
+            $RegValue = $null
+            $RegValueType = $RefValueType
+            $RegValueName = $RefValueName
+            $RegValueTypeExistence = "[Does not exist]"
+            $RegValueNameExistence = "[Does not exist]"
+            $SidCompliant = $false
+            $Hive = "HKEY_USERS"
+        }
+
+        # Construct custom object for evidence (works for both existing and non-existing keys)
+        [PSCustomObject]@{
+            SID          = $Sid
+            User         = (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value
+            Hive         = $Hive
+            Key          = if ($RegKeyExists) { $Sid + $RefKey } else { $Sid + "$RefKey [Does not exist]" }
+            Name         = "$RegValueName $RegValueNameExistence"
+            Type         = "$RegValueType $RegValueTypeExistence"
+            Value        = if ($null -eq $RegValue) { "[Does not exist]" } else { "$RegValue [Exists]" }
+            SidCompliant = $SidCompliant
+        }
+        Write-Verbose "Completed audit for SID: $Sid - Pass: $SidCompliant"
+    }
+
+    # Final evaluation. All logged in user HKU hives must pass in order for this audit to pass
+    $AuditPass = ($AuditDetails.SidCompliant -notcontains $false)
+    
+    if ($AuditPass -eq $true) { $AuditState = 'PASS' } else { $AuditState = 'FAIL' }
+    
+    Write-Verbose "Recommendation audit state: $AuditState"
+    
+    return @{
+        AuditState   = $AuditState
+        AuditDetails = $AuditDetails
+    }
+
+}
+
+# Begin main script body
+# Check if the registry string contains the ARGS flag and process it
+if ($RegistryString -match '::ARGS=(.+)$') {
+    $ArgsPart = $matches[1]
+    $RegistryString = $RegistryString -replace '::ARGS=.+$', ''
+
+    $ArgsList = ($ArgsPart -split ',').Trim()
+    foreach ($arg in $ArgsList) {
+        switch ($arg) {
+            'IncludeLocalAccounts' { 
+                $IncludeLocalAccounts = $true
+                Write-Verbose "Including Local Accounts in the audit"
+            }
+            'IncludeEntraIdAccounts' { 
+                $IncludeEntraIdAccounts = $true 
+                Write-Verbose "Including Entra ID Accounts in the audit"
+            }
+            default {
+                Write-Warning "Unknown argument '$arg' in ARGS flag"
+            }
+        }
+    }
+}
+
+try {
+    $AuditResults = Invoke-UserRegistryAudit -RegistryString $RegistryString `
+        -IncludeLocalAccounts:$IncludeLocalAccounts `
+        -IncludeEntraIdAccounts:$IncludeEntraIdAccounts `
+        -ForceRefresh:$ForceRefresh
+}
+catch {
+    $AuditResults = @{
+        AuditDetails = @()
+        AuditState   = 'ERROR'
+        ExceptionMessage = $_.Exception.Message
+    }
+}
+
+# Output the results for CIS-CAT Assessor ingestion
+$AuditDetails = $AuditResults.AuditDetails
+$FormattedAuditDetails = ($AuditDetails | Format-List | Out-String).Trim() -replace "(\r?\n){2,}", "`n----------------------------------------`n"
+$PassCount = $AuditDetails | Where-Object SidCompliant -eq $true | Measure-Object | Select-Object -ExpandProperty Count
+$FailCount = $AuditDetails | Where-Object SidCompliant -eq $false | Measure-Object | Select-Object -ExpandProperty Count
+
+$Evidence = @"
+Audit Result: ** $($AuditResults.AuditState) **
+Processed $($AuditDetails.SID.Count) user SID(s)
+Passed: $PassCount
+Failed: $FailCount
+========================================
+Assessment Evidence
+========================================
+$FormattedAuditDetails
+"@
+
+if ($AuditResults.ExceptionMessage) {
+    $Evidence += "`nException Details: $($AuditResults.ExceptionMessage)`n"
+}
+
+Write-Output $Evidence
+
+# Exit with appropriate code based on audit result
+Write-Verbose "Exiting with audit state: $($AuditResults.AuditState)"
+switch ($AuditResults.AuditState) {
+    'PASS' { exit $env:XCCDF_RESULT_PASS }
+    'FAIL' { exit $env:XCCDF_RESULT_FAIL }
+    'ERROR' { exit $env:XCCDF_RESULT_ERROR }
+    'INFO' { exit $env:XCCDF_RESULT_INFORMATIONAL }
+    default { exit $env:XCCDF_RESULT_UNKNOWN }
+}
