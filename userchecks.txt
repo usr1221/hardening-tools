@@ -1,0 +1,46 @@
+$checks = @(
+    # Category, Friendly name, Registry path (HKCU:), Value name, Recommended
+    @('Office macros','Word: Block macros from internet','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Word\Security','blockcontentexecutionfrominternet',1),
+    @('Office macros','Excel: Block macros from internet','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Excel\Security','blockcontentexecutionfrominternet',1),
+    @('Office macros','PowerPoint: Block macros from internet','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\PowerPoint\Security','blockcontentexecutionfrominternet',1),
+    @('Office macros','Word: VBA macro notification','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Word\Security','VBAWarnings',4),
+    @('Office macros','Excel: VBA macro notification','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Excel\Security','VBAWarnings',4),
+    @('Office macros','PowerPoint: VBA macro notification','HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\PowerPoint\Security','VBAWarnings',4),
+    @('App hardening','Do not preserve zone info (MOTW)','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments','SaveZoneInformation',2),
+    @('App hardening','Notify AV when opening attachments','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments','ScanWithAntiVirus',3),
+    @('App hardening','Hide mechanisms to remove zone info','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments','HideZoneInfoOnProperties',1),
+    @('Explorer','Remove CD burning features','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer','NoCDBurning',1),
+    @('Explorer','Prevent in-place file sharing','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer','NoInplaceSharing',1),
+    @('Explorer','Remove Security tab','HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer','NoSecurityTab',1),
+    @('Explorer','Show file extensions','HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced','HideFileExt',0),
+    @('Windows Spotlight','No third-party spotlight content','HKCU:\Software\Policies\Microsoft\Windows\CloudContent','DisableThirdPartySuggestions',1),
+    @('Copilot','Turn off Windows Copilot','HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot','TurnOffWindowsCopilot',1),
+    @('Command Prompt','Prevent access to cmd','HKCU:\SOFTWARE\Policies\Microsoft\Windows\System','DisableCMD',1),
+    @('Registry tools','Prevent access to regedit','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System','DisableRegistryTools',1),
+    @('Session locking','Screen saver secure (password)','HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop','ScreenSaverIsSecure','1'),
+    @('Session locking','Screen saver timeout','HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop','ScreenSaveTimeOut','900'),
+    @('Session locking','Enable screen saver','HKCU:\Software\Policies\Microsoft\Windows\Control Panel\Desktop','ScreenSaveActive','1'),
+    @('Lock screen','No toast notifications on lock screen','HKCU:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\PushNotifications','NoToastApplicationNotificationOnLockScreen',1),
+    @('Group Policy','Deny RSoP to interactive user','HKCU:\Software\Policies\Microsoft\Windows\System','DenyRsopToInteractiveUser',1)
+)
+
+$results = foreach ($c in $checks) {
+    $path = $c[2]; $name = $c[3]
+    $current = $null; $state = 'Not Set'
+    try {
+        $item = Get-ItemProperty -Path $path -Name $name -ErrorAction Stop
+        $current = $item.$name
+        $state = if ("$current" -eq "$($c[4])") { 'Compliant' } else { 'Deviates' }
+    } catch { $state = 'Not Set' }
+
+    [pscustomobject]@{
+        Category    = $c[0]
+        Setting     = $c[1]
+        Value       = $name
+        Recommended = $c[4]
+        Current     = if ($null -eq $current) { '<not set>' } else { $current }
+        Status      = $state
+    }
+}
+
+$results | Format-Table -AutoSize
