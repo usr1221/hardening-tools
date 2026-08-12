@@ -18,3 +18,14 @@ $sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/local/d
 
 
 $base | Invoke-CimMethod -MethodName EndSession -Arguments @{SessionId=$sid}
+
+
+try {
+  $base = Get-CimInstance -Namespace root\wmi -ClassName CitrixXenStoreBase
+  $r = $base | Invoke-CimMethod -MethodName AddSession -Arguments @{Id="audit"}
+} catch {
+  $_.Exception.MessageId
+  $_.Exception.NativeErrorCode
+  $_.Exception.HResult
+  $_ | fl * -Force
+}
