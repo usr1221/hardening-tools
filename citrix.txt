@@ -1,0 +1,20 @@
+$base = Get-CimInstance -Namespace root\wmi -ClassName CitrixXenStoreBase
+$sid  = ($base | Invoke-CimMethod -MethodName AddSession -Arguments @{Id="audit"}).SessionId
+$sess = Get-CimInstance -Namespace root\wmi -ClassName CitrixXenStoreSession | ? SessionId -eq $sid
+
+
+$sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/"}
+$sess | Invoke-CimMethod -MethodName GetValue    -Arguments @{Pathname="name"}
+$sess | Invoke-CimMethod -MethodName GetValue    -Arguments @{Pathname="domid"}
+
+($sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/"}).children
+
+
+$sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/local/domain"}
+
+
+$sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/vm"}
+$sess | Invoke-CimMethod -MethodName GetChildren -Arguments @{Pathname="/local/domain/0"}
+
+
+$base | Invoke-CimMethod -MethodName EndSession -Arguments @{SessionId=$sid}
