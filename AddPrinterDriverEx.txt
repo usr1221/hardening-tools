@@ -2,12 +2,22 @@ $Signature = @"
 using System;
 using System.Runtime.InteropServices;
 
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DRIVER_INFO_2 {
+    public uint cVersion;
+    public string pName;
+    public string pEnvironment;
+    public string pDriverPath;
+    public string pDataFile;
+    public string pConfigFile;
+}
+
 public class WinSpool {
     [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool AddPrinterDriverEx(
         string pName,
         uint Level,
-        IntPtr pDriverInfo,
+        ref DRIVER_INFO_2 pDriverInfo,
         uint dwFileCopyFlags
     );
 }
@@ -15,10 +25,19 @@ public class WinSpool {
 
 Add-Type -TypeDefinition $Signature
 
-# Call the API directly
-$result = [WinSpool]::AddPrinterDriverEx($null, 2, [IntPtr]::Zero, 0)
+# Populate the DRIVER_INFO_2 structure
+$DriverInfo = New-Object DRIVER_INFO_2
+$DriverInfo.cVersion     = 3                       # 3 = 64-bit user-mode driver (Windows x64)
+$DriverInfo.pName        = "Test Printer Driver"    # Internal driver name
+$DriverInfo.pEnvironment = "Windows x64"           # Fixes Error 203 (ERROR_ENVVAR_NOT_FOUND)
+$DriverInfo.pDriverPath  = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRV.DLL"
+$DriverInfo.pDataFile    = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRV.GPD"
+$DriverInfo.pConfigFile  = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRUI.DLL"
 
-# Capture the exact Win32 return code
+# Call AddPrinterDriverEx with Level 2 and flags (e.g., 0x00000004 = APD_COPY_NEW_FILES)
+$result = [WinSpool]::AddPrinterDriverEx($null, 2, [ref]$DriverInfo, 4)
+
+# Capture Win32 error code
 $lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
 $exception = New-Object System.ComponentModel.Win32Exception($lastError)
 
