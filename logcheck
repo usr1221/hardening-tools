@@ -1,0 +1,12 @@
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Security'
+    ID      = 4688
+} -MaxEvents 50 | Select-Object TimeCreated, 
+    @{N='ProcessName'; E={$_.Properties[5].Value}}, 
+    @{N='CommandLine'; E={$_.Properties[8].Value}} | Format-Table -AutoSize
+
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Microsoft-Windows-PowerShell/Operational'
+    ID      = 4104
+} -MaxEvents 50 | Select-Object TimeCreated, 
+    @{N='ScriptBlockText'; E={$_.Properties[2].Value}} | Format-List
