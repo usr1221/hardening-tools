@@ -47,3 +47,33 @@ $exception = New-Object System.ComponentModel.Win32Exception($lastError)
     ErrorName = $exception.NativeErrorCode
     Message   = $exception.Message
 }
+
+
+
+# Verify if the default spooler driver directory exists on your system
+$spoolDir = "C:\Windows\System32\spool\DRIVERS\x64\3"
+if (-not (Test-Path $spoolDir)) {
+    New-Item -ItemType Directory -Path $spoolDir -Force | Out-Null
+}
+
+$DriverInfo = New-Object DRIVER_INFO_2
+$DriverInfo.cVersion     = 3
+$DriverInfo.pName        = "Test Printer Driver"
+$DriverInfo.pEnvironment = $null  # $null forces Windows to auto-select local environment
+$DriverInfo.pDriverPath  = "C:\Windows\System32\winspool.drv"
+$DriverInfo.pDataFile    = "C:\Windows\System32\winspool.drv"
+$DriverInfo.pConfigFile  = "C:\Windows\System32\winspool.drv"
+
+# Call AddPrinterDriverEx
+$result = [WinSpool]::AddPrinterDriverEx($null, 2, [ref]$DriverInfo, 4)
+
+# Capture updated Win32 return code
+$lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+$exception = New-Object System.ComponentModel.Win32Exception($lastError)
+
+[PSCustomObject]@{
+    ApiResult = $result
+    ErrorCode = $lastError
+    ErrorName = $exception.NativeErrorCode
+    Message   = $exception.Message
+}
