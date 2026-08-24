@@ -2,78 +2,58 @@ $Signature = @"
 using System;
 using System.Runtime.InteropServices;
 
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-public struct DRIVER_INFO_2 {
-    public uint cVersion;
-    public string pName;
-    public string pEnvironment;
-    public string pDriverPath;
-    public string pDataFile;
-    public string pConfigFile;
-}
-
-public class WinSpool {
-    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+public class WinSpoolMarshal {
+    [DllImport("winspool.drv", EntryPoint = "AddPrinterDriverExW", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool AddPrinterDriverEx(
         string pName,
         uint Level,
-        ref DRIVER_INFO_2 pDriverInfo,
+        IntPtr pDriverInfo,
         uint dwFileCopyFlags
     );
 }
 "@
 
-Add-Type -TypeDefinition $Signature
-
-# Populate the DRIVER_INFO_2 structure
-$DriverInfo = New-Object DRIVER_INFO_2
-$DriverInfo.cVersion     = 3                       # 3 = 64-bit user-mode driver (Windows x64)
-$DriverInfo.pName        = "Test Printer Driver"    # Internal driver name
-$DriverInfo.pEnvironment = "Windows x64"           # Fixes Error 203 (ERROR_ENVVAR_NOT_FOUND)
-$DriverInfo.pDriverPath  = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRV.DLL"
-$DriverInfo.pDataFile    = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRV.GPD"
-$DriverInfo.pConfigFile  = "C:\Windows\System32\spool\DRIVERS\x64\3\UNIDRUI.DLL"
-
-# Call AddPrinterDriverEx with Level 2 and flags (e.g., 0x00000004 = APD_COPY_NEW_FILES)
-$result = [WinSpool]::AddPrinterDriverEx($null, 2, [ref]$DriverInfo, 4)
-
-# Capture Win32 error code
-$lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-$exception = New-Object System.ComponentModel.Win32Exception($lastError)
-
-[PSCustomObject]@{
-    ApiResult = $result
-    ErrorCode = $lastError
-    ErrorName = $exception.NativeErrorCode
-    Message   = $exception.Message
+if (-not ([System.Management.Automation.PSTypeName]'WinSpoolMarshal').Type) {
+    Add-Type -TypeDefinition $Signature
 }
 
+# 1. Allocate 48 bytes for DRIVER_INFO_2 (64-bit aligned structure)
+$pDriverInfo = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(48)
+[System.Runtime.InteropServices.Marshal]::ZeroMemory($pDriverInfo, 48)
 
+# 2. Allocate unmanaged Unicode string pointers
+$pName        = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("Test Driver")
+$pEnvironment = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("Windows x64")
+$pDriverPath  = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\Windows\System32\winspool.drv")
+$pDataFile    = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\Windows\System32\winspool.drv")
+$pConfigFile  = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\Windows\System32\winspool.drv")
 
-# Verify if the default spooler driver directory exists on your system
-$spoolDir = "C:\Windows\System32\spool\DRIVERS\x64\3"
-if (-not (Test-Path $spoolDir)) {
-    New-Item -ItemType Directory -Path $spoolDir -Force | Out-Null
-}
+# 3. Write fields into unmanaged buffer offsets
+[System.Runtime.InteropServices.Marshal]::WriteInt32($pDriverInfo, 0, 3)             # cVersion = 3
+[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 8, $pName)       # pName
+[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 16, $pEnvironment)# pEnvironment
+[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 24, $pDriverPath) # pDriverPath
+[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 32, $pDataFile)   # pDataFile
+[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 40, $pConfigFile) # pConfigFile
 
-$DriverInfo = New-Object DRIVER_INFO_2
-$DriverInfo.cVersion     = 3
-$DriverInfo.pName        = "Test Printer Driver"
-$DriverInfo.pEnvironment = $null  # $null forces Windows to auto-select local environment
-$DriverInfo.pDriverPath  = "C:\Windows\System32\winspool.drv"
-$DriverInfo.pDataFile    = "C:\Windows\System32\winspool.drv"
-$DriverInfo.pConfigFile  = "C:\Windows\System32\winspool.drv"
+try {
+    # Call AddPrinterDriverEx
+    $result = [WinSpoolMarshal]::AddPrinterDriverEx($null, 2, $pDriverInfo, 4)
+    $lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $exception = New-Object System.ComponentModel.Win32Exception($lastError)
 
-# Call AddPrinterDriverEx
-$result = [WinSpool]::AddPrinterDriverEx($null, 2, [ref]$DriverInfo, 4)
-
-# Capture updated Win32 return code
-$lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-$exception = New-Object System.ComponentModel.Win32Exception($lastError)
-
-[PSCustomObject]@{
-    ApiResult = $result
-    ErrorCode = $lastError
-    ErrorName = $exception.NativeErrorCode
-    Message   = $exception.Message
+    [PSCustomObject]@{
+        ApiResult = $result
+        ErrorCode = $lastError
+        ErrorName = $exception.NativeErrorCode
+        Message   = $exception.Message
+    }
+} finally {
+    # Clean up allocated memory
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pDriverInfo)
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pName)
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pEnvironment)
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pDriverPath)
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pDataFile)
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pConfigFile)
 }
