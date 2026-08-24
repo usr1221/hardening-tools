@@ -19,7 +19,11 @@ if (-not ([System.Management.Automation.PSTypeName]'WinSpoolMarshal').Type) {
 
 # 1. Allocate 48 bytes for DRIVER_INFO_2 (64-bit aligned structure)
 $pDriverInfo = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(48)
-[System.Runtime.InteropServices.Marshal]::ZeroMemory($pDriverInfo, 48)
+
+# Zero out the 48-byte unmanaged memory block
+0..5 | ForEach-Object { 
+    [System.Runtime.InteropServices.Marshal]::WriteInt64($pDriverInfo, $_ * 8, 0) 
+}
 
 # 2. Allocate unmanaged Unicode string pointers
 $pName        = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("Test Driver")
@@ -28,16 +32,16 @@ $pDriverPath  = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:
 $pDataFile    = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\Windows\System32\winspool.drv")
 $pConfigFile  = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\Windows\System32\winspool.drv")
 
-# 3. Write fields into unmanaged buffer offsets
-[System.Runtime.InteropServices.Marshal]::WriteInt32($pDriverInfo, 0, 3)             # cVersion = 3
-[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 8, $pName)       # pName
-[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 16, $pEnvironment)# pEnvironment
-[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 24, $pDriverPath) # pDriverPath
-[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 32, $pDataFile)   # pDataFile
-[System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 40, $pConfigFile) # pConfigFile
-
 try {
-    # Call AddPrinterDriverEx
+    # 3. Write structure fields into specific unmanaged memory offsets
+    [System.Runtime.InteropServices.Marshal]::WriteInt32($pDriverInfo, 0, 3)              # cVersion = 3
+    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 8, $pName)        # pName
+    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 16, $pEnvironment)# pEnvironment
+    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 24, $pDriverPath) # pDriverPath
+    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 32, $pDataFile)   # pDataFile
+    [System.Runtime.InteropServices.Marshal]::WriteIntPtr($pDriverInfo, 40, $pConfigFile) # pConfigFile
+
+    # 4. Invoke API call
     $result = [WinSpoolMarshal]::AddPrinterDriverEx($null, 2, $pDriverInfo, 4)
     $lastError = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
     $exception = New-Object System.ComponentModel.Win32Exception($lastError)
@@ -49,7 +53,7 @@ try {
         Message   = $exception.Message
     }
 } finally {
-    # Clean up allocated memory
+    # 5. Clean up unmanaged pointers to prevent memory leaks
     [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pDriverInfo)
     [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pName)
     [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pEnvironment)
