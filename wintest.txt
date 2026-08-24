@@ -1895,67 +1895,6 @@ Write-Host "If credentials are found in the recycle bin, tool from nirsoft may a
 
 ######################## File/Folder Check ########################
 
-Write-Host ""
-if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========||  Password Check in Files/Folders"
-
-# Looking through the entire computer for passwords
-# Also looks for MCaffee site list while looping through the drives.
-if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| Password Check. Starting at root of each drive. This will take some time. Like, grab a coffee or tea kinda time."
-Write-Host -ForegroundColor Blue "=========|| Looking through each drive, searching for $fileExtensions"
-# Check if the Excel com object is installed, if so, look through files, if not, just notate if a file has "user" or "password in name"
-try { 
-  New-Object -ComObject Excel.Application | Out-Null
-  $ReadExcel = $true 
-}
-catch {
-  $ReadExcel = $false
-  if($Excel) {
-    Write-Host -ForegroundColor Yellow "Host does not have Excel COM object, will still point out excel files when found."  
-  }
-}
-$Drives.Root | ForEach-Object {
-  $Drive = $_
-  Get-ChildItem $Drive -Recurse -Include $fileExtensions -ErrorAction SilentlyContinue -Force | ForEach-Object {
-    $path = $_
-    #Exclude files/folders with 'lang' in the name
-    if ($Path.FullName | select-string "(?i).*lang.*"){
-      #Write-Host "$($_.FullName) found!" -ForegroundColor red
-    }
-    if($Path.FullName | Select-String "(?i).:\\.*\\.*Pass.*"){
-      write-host -ForegroundColor Blue "$($path.FullName) contains the word 'pass'"
-    }
-    if($Path.FullName | Select-String ".:\\.*\\.*user.*" ){
-      Write-Host -ForegroundColor Blue "$($path.FullName) contains the word 'user' -excluding the 'users' directory"
-    }
-    # If path name ends with common excel extensions
-    elseif ($Path.FullName | Select-String ".*\.xls",".*\.xlsm",".*\.xlsx") {
-      if ($ReadExcel -and $Excel) {
-        Search-Excel -Source $Path.FullName -SearchText "user"
-        Search-Excel -Source $Path.FullName -SearchText "pass"
-      }
-    }
-    else {
-      if ($path.Length -gt 0) {
-        # Write-Host -ForegroundColor Blue "Path name matches extension search: $path"
-      }
-      if ($path.FullName | Select-String "(?i).*SiteList\.xml") {
-        Write-Host "Possible MCaffee Site List Found: $($_.FullName)"
-        Write-Host "Just going to leave this here: https://github.com/funoverip/mcafee-sitelist-pwd-decryption" -ForegroundColor Yellow
-      }
-      $regexSearch.keys | ForEach-Object {
-        $passwordFound = Get-Content $path.FullName -ErrorAction SilentlyContinue -Force | Select-String $regexSearch[$_] -Context 1, 1
-        if ($passwordFound) {
-          Write-Host "Possible Password found: $_" -ForegroundColor Yellow
-          Write-Host $Path.FullName
-          Write-Host -ForegroundColor Blue "$_ triggered"
-          Write-Host $passwordFound -ForegroundColor Red
-        }
-      }
-    }  
-  }
-}
 
 ######################## Registry Password Check ########################
 
